@@ -12,7 +12,8 @@ from transformers import (
     set_seed,
     AutoModel,
     AutoConfig,
-    AutoTokenizer
+    AutoTokenizer,
+    DataCollatorForSeq2Seq
 )
 
 from arguments import ModelArguments, DataTrainingArguments
@@ -122,3 +123,137 @@ def main():
 
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
+
+    def preprocess_function_eval(examples):
+        inputs, targets = [], []
+        for i in range(len(examples[prompt_column])):
+            if examples[prompt_column][i] and examples[response_column][i]:
+                query = examples[prompt_column][i]
+                history = examples[history_column][i] if history_column is not None else None
+                prompt = tokenizer.build_prompt(query, history)
+                inputs.append(prompt)
+                targets.append(examples[response_column][i])
+        
+        inputs = [prefix + inp for inp in inputs]
+        model_inputs = tokenizer(inputs, max_length=data_args.max_source_length, truncation=True, padding=True)
+        labels = tokenizer(text_target=targets, max_length=max_target_length, truncation=True)
+
+        if data_args.ignore_pad_token_for_loss:
+            labels["inputs_ids"] = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
+        model_inputs["labels"] = labels["inputs_ids"]
+
+        return model_inputs
+    
+    def preprocess_function_train(examples):
+        max_seq_length = data_args.max_source_length + data_args.max_target_length + 1
+
+        model_inputs = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(examples[prompt_column])):
+            if examples[prompt_column][i] and examples[response_column][i]:
+                query = examples[prompt_column][i]
+                answer = examples[response_column][i]
+                history = examples[history_column][i] if history_column is not None else None
+                prompt = tokenizer.build_prompt(query, history)
+                prompt = prefix + prompt
+                prompt_ids = tokenizer.encode(
+                    text = prompt, 
+                    add_special_tokens = True,
+                    truncation = True,
+                    max_length = data_args.max_source_length
+                )
+                answer_ids = tokenizer.encode(
+                    text = answer,
+                    add_special_tokens = False,
+                    truncation = True,
+                    max_length = data_args.max_target_length
+                )
+
+                context_length = len(prompt_ids)
+                input_ids = prompt_ids + answer_ids + [tokenizer.eos_token_id]
+                labels = [tokenizer.pad_token_id] * context_length + answer_ids + [tokenizer.eos_token_id]
+
+                pad_len = max_seq_length - len(input_ids)
+                input_ids = prompt_ids + [tokenizer.pad_token_id] * pad_len
+                labels = labels + [tokenizer.pad_token_id] * pad_len
+                if data_args.ignore_pad_token_for_loss:
+                    labels = [(l if l != tokenizer.pad_token_id else -100) for l in labels]
+                
+                model_inputs["input_ids"].append(input_ids)
+                model_inputs["labels"].append(labels)
+        
+        return model_inputs
+    
+    def print_dataset_example(example):
+        print("input_ids", example["input_ids"])
+        print("inputs", tokenizer.decode(example["inputs_ids"]))
+        print("label_ids", example["labels"])
+        print("labels", tokenizer.decode(example["labels"]))
+    
+    if training_args.do_train:
+        if "train" not in raw_datasets:
+            raise ValueError("--do_train requires a train dataset")
+        train_dataset = raw_datasets["train"]
+        if data_args.max_train_samples is not None:
+            max_train_samples = min(len(train_dataset), data_args.max_train_samples)
+            train_dataset = train_dataset.select(range(max_train_samples))
+        with training_args.main_process_first(desc="train dataset map pre-processing"):
+            train_dataset = train_dataset.map(
+                preprocess_function_train,
+                batched = True,
+                num_proc = data_args.preprocessing_num_workers,
+                remove_columns = column_names,
+                load_from_cache_file = not data_args.overwrite_cache,
+                desc = "Running tokenizer on train dataset"
+            )
+        print_dataset_example(train_dataset[0])
+    
+    if training_args.do_eval:
+        max_target_length = data_args.val_max_target_length
+        if "validation" not in raw_datasets:
+            raise ValueError("--do_eval requires a validation dataset")
+        eval_dataset = raw_datasets["validation"]
+        if data_args.max_eval_samples is not None:
+            max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
+            eval_dataset = eval_dataset.select(range(max_eval_samples))
+        with training_args.main_process_first(desc="validation dataset map pre-processing"):
+            eval_dataset = eval_dataset.map(
+                preprocess_function_eval,
+                batched = True,
+                num_proc = data_args.preprocessing_num_workers,
+                remove_columns = column_names,
+                load_from_cache_file = not data_args.overwrite_cache,
+                desc = "Running tokenizer on validation dataset"
+            )
+        print_dataset_example(eval_dataset[0])
+    
+    if training_args.do_predict:
+        max_target_length = data_args.val_max_target_length
+        if "test" not in raw_datasets:
+            raise ValueError("--do_predict requires a test dataset")
+        predict_dataset = raw_datasets["test"]
+        if data_args.max_predict_samples is not None:
+            max_predict_samples = min(len(predict_dataset), data_args.max_predict_samples)
+            predict_dataset = predict_dataset.select(range(max_predict_samples))
+        with training_args.main_process_first(desc="prediction dataset map pre-processing"):
+            predict_dataset = predict_dataset.map(
+                preprocess_function_eval,
+                batched = True,
+                num_proc = data_args.preprocessing_num_workers,
+                remove_columns = column_names,
+                load_from_cache_file = not data_args.overwrite_cache,
+                desc = "Running tokenizer on prediction dataset",
+            )
+        print_dataset_example(predict_dataset[0])
+    
+    # Data collator
+    label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model = model,
+        label_pad_token_id = label_pad_token_id,
+        pad_to_multiple_of = None,
+        padding = False
+    )
