@@ -9,3 +9,4 @@ rouge_chinese
 nltk 
 jieba 
 datasets
+deepspeed
