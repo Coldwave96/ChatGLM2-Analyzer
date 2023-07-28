@@ -2,10 +2,13 @@ import os
 import sys
 import json
 import torch
-import logging
+import jieba
 import datasets
+import numpy as np
 
-import transformers
+from rouge_chinese import Rouge
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+
 from transformers import (
     HfArgumentParser,
     Seq2SeqTrainingArguments,
@@ -16,9 +19,8 @@ from transformers import (
     DataCollatorForSeq2Seq
 )
 
+from seq2seq_trainer import Seq2SeqTrainer
 from arguments import ModelArguments, DataTrainingArguments
-
-logger = logging.getLogger(__name__)
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
@@ -28,31 +30,6 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
-    # Setup logging
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-
-    if training_args.should_log:
-        # The default of training_args.log_level is passive, so we set log level at info here to have that default.
-        transformers.utils.logging.set_verbosity_info()
-
-    log_level = training_args.get_process_log_level()
-    logger.setLevel(log_level)
-    datasets.utils.logging.set_verbosity(log_level)
-    transformers.utils.logging.set_verbosity(log_level)
-    transformers.utils.logging.enable_default_handler()
-    transformers.utils.logging.enable_explicit_format()
-
-    # Log on each process the small summary:
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
-    )
-    logger.info(f"Training/evaluation parameters {training_args}")
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -113,7 +90,7 @@ def main():
     elif training_args.do_predict:
         column_names = raw_datasets["test"].column_names
     else:
-        logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
+        print("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
         return
     
     # Get the column names for input/target
@@ -257,3 +234,109 @@ def main():
         pad_to_multiple_of = None,
         padding = False
     )
+
+    # Metric
+    def compute_metrics(eval_preds):
+        preds, labels = eval_preds
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        if data_args.ignore_pad_token_for_loss:
+            # Replace -100 in the labels as we can't decode them.
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        score_dict = {
+            "rouge-1": [],
+            "rouge-2": [],
+            "rouge-3": [],
+            "bleu-4": []
+        }
+        for pred, label in zip(decoded_preds, decoded_labels):
+            hypothesis = list(jieba.cut(pred))
+            reference = list(jieba.cut(label))
+            rouge = Rouge()
+            scores = rouge.get_scores(' '.join(hypothesis), ' '.join(reference))
+            result = scores[0]
+
+            for k, v in result.items():
+                score_dict[k].append(round(v["f"] * 100, 4))
+            bleu_score = sentence_bleu([list(label)], list(pred), smoothing_function=SmoothingFunction().method3)
+            score_dict["bleu-4"].append(round(bleu_score * 100, 4))
+
+        for k, v in score_dict.items():
+            score_dict[k] = float(np.mean(v))
+        return score_dict
+    
+    # Override the decoding parameters of Seq2SeqTrainer
+    training_args.generation_max_length = (training_args.generation_max_length if training_args.generation_max_length is not None else data_args.val_max_target_length)
+    training_args.generation_num_beams = (data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams)
+    # Initialize the trainer
+    trainer = Seq2SeqTrainer(
+        model = model,
+        args = training_args,
+        train_dataset = train_dataset if training_args.do_train else None,
+        eval_dataset = eval_dataset if training_args.do_eval else None,
+        tokenizer = tokenizer,
+        data_collator = data_collator,
+        compute_metrics = compute_metrics if training_args.predict_with_generate else None,
+        save_changed = model_args.pre_seq_len is not None
+    )
+
+    # Training
+    if training_args.do_train:
+        checkpoint = None
+        if training_args.resume_from_checkpoint is not None:
+            checkpoint = training_args.resume_from_checkpoint
+        model.gradient_checkpointing.enable()
+        model.enable_input_require_grads()
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+
+        metrics = train_result.metrics
+        max_train_samples = (data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset))
+
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
+    
+    # Evaluation
+    results = {}
+    max_seq_length = data_args.max_source_length + data_args.max_target_length + 1
+    if training_args.do_eval:
+        metrics = trainer.evaluate(metric_key_prefix="eval", do_sample=True, top_p=0.7, max_length=max_seq_length, temperature=0.95)
+        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
+
+    if training_args.do_predict:
+        predict_results = trainer.predict(predict_dataset, metric_key_prefix="predict", max_length=max_seq_length, do_sample=True, top_p=0.7, temperature=0.95)
+        metrics = predict_results.metrics
+        max_predict_samples = (
+            data_args.max_predict_samples if data_args.max_predict_samples is not None else len(predict_dataset)
+        )
+        metrics["predict_samples"] = min(max_predict_samples, len(predict_dataset))
+
+        trainer.log_metrics("predict", metrics)
+        trainer.save_metrics("predict", metrics)
+
+        if trainer.is_world_process_zero():
+            if training_args.predict_with_generate:
+                predictions = tokenizer.batch_decode(
+                    predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                )
+                predictions = [pred.strip() for pred in predictions]
+                labels = tokenizer.batch_decode(
+                    predict_results.label_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                )
+                labels = [label.strip() for label in labels]
+                output_prediction_file = os.path.join(training_args.output_dir, "generated_predictions.txt")
+                with open(output_prediction_file, "w", encoding="utf-8") as writer:
+                    for p, l in zip(predictions, labels):
+                        res = json.dumps({"labels": l, "predict": p}, ensure_ascii=False)
+                        writer.write(f"{res}\n")
+    return results
+
+if __name__ == "__main__":
+    main()
