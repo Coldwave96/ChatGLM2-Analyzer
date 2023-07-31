@@ -35,7 +35,7 @@ class ModelArguments:
     )
     use_auth_token: bool = field(
         default = False,
-        metadata = "Will use the token generated when running `huggingface-cli login` (necessary to use this script with private models)"
+        metadata = {"help": "Will use the token generated when running `huggingface-cli login` (necessary to use this script with private models)"}
     )
     resize_position_embeddings: Optional[bool] = field(
         default = None,
@@ -105,7 +105,7 @@ class DataTrainingArguments:
     )
     max_source_length: Optional[int] = field(
         default = 1024,
-        metadata={
+        metadata = {
             "help": (
                 "The maximum total input sequence length after tokenization. " 
                 "Sequences longer than this will be truncated, sequences shorter will be padded."
