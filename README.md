@@ -113,3 +113,8 @@ deepspeed --num_gpus=4 --master_port <MASTER_PORT> finetune.py \
     --learning_rate <LR> \
     --fp16
 ```
+
+## Inference
+API implement in OpenAI's Mode is provided in openai.py. Run `python openai.py` for detailed parameters. 
+
+API usage please refer to [OpenAI's official documentations](https://platform.openai.com/docs/api-reference/chat).

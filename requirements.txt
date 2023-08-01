@@ -10,3 +10,6 @@ nltk
 jieba 
 datasets
 deepspeed
+uvicorn
+fastapi
+sse-starlette
