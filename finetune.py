@@ -65,7 +65,7 @@ def main():
         prefix_state_dict = torch.load(os.path.join(model_args.ptuning_checkpoint, "pytorch_model.bin"))
         new_prefix_state_dict = {}
         for k, v in prefix_state_dict.items():
-            if k.startwith("transformer.prefix_encoder."):
+            if k.startswith("transformer.prefix_encoder."):
                 new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
         model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
 
@@ -116,8 +116,8 @@ def main():
         labels = tokenizer(text_target=targets, max_length=max_target_length, truncation=True)
 
         if data_args.ignore_pad_token_for_loss:
-            labels["inputs_ids"] = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
-        model_inputs["labels"] = labels["inputs_ids"]
+            labels["input_ids"] = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
+        model_inputs["labels"] = labels["input_ids"]
 
         return model_inputs
     
@@ -153,7 +153,7 @@ def main():
                 labels = [tokenizer.pad_token_id] * context_length + answer_ids + [tokenizer.eos_token_id]
 
                 pad_len = max_seq_length - len(input_ids)
-                input_ids = prompt_ids + [tokenizer.pad_token_id] * pad_len
+                input_ids = input_ids + [tokenizer.pad_token_id] * pad_len
                 labels = labels + [tokenizer.pad_token_id] * pad_len
                 if data_args.ignore_pad_token_for_loss:
                     labels = [(l if l != tokenizer.pad_token_id else -100) for l in labels]
@@ -249,7 +249,7 @@ def main():
         score_dict = {
             "rouge-1": [],
             "rouge-2": [],
-            "rouge-3": [],
+            "rouge-l": [],
             "bleu-4": []
         }
         for pred, label in zip(decoded_preds, decoded_labels):
@@ -296,7 +296,7 @@ def main():
         max_train_samples = (data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset))
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
-        trainer.log_metrics("eval", metrics)
+        trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
     
