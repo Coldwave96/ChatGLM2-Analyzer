@@ -118,3 +118,20 @@ deepspeed --num_gpus=4 --master_port <MASTER_PORT> finetune.py \
 API implement in OpenAI's Mode is provided in openai.py. Run `python openai.py` for detailed parameters. 
 
 API usage please refer to [OpenAI's official documentations](https://platform.openai.com/docs/api-reference/chat).
+
+A simple example show blow.
+```Python
+import openai
+if __name__ == "__main__":
+    openai.api_base = "http://localhost:8000/v1"
+    openai.api_key = "none"
+    for chunk in openai.ChatCompletion.create(
+        model="chatglm2-6b",
+        messages=[
+            {"role": "user", "content": "hello"}
+        ],
+        stream=True
+    ):
+        if hasattr(chunk.choices[0].delta, "content"):
+            print(chunk.choices[0].delta.content, end="", flush=True)
+```
