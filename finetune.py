@@ -58,7 +58,7 @@ def main():
     config.pre_seq_len = model_args.pre_seq_len
     config.prefix_projection = model_args.prefix_projection
 
-    tokenizer = AutoTokenizer.from_pretrained(data_args.model_name_or_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
 
     model = AutoModel.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
     if model_args.ptuning_checkpoint is not None:  # loading extra state dict of prefix encoder
@@ -165,7 +165,7 @@ def main():
     
     def print_dataset_example(example):
         print("input_ids", example["input_ids"])
-        print("inputs", tokenizer.decode(example["inputs_ids"]))
+        print("inputs", tokenizer.decode(example["input_ids"]))
         print("label_ids", example["labels"])
         print("labels", tokenizer.decode(example["labels"]))
     
@@ -288,12 +288,13 @@ def main():
         checkpoint = None
         if training_args.resume_from_checkpoint is not None:
             checkpoint = training_args.resume_from_checkpoint
-        model.gradient_checkpointing.enable()
+        model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
 
         metrics = train_result.metrics
         max_train_samples = (data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset))
+        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("train", metrics)

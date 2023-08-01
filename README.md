@@ -58,7 +58,7 @@ torchrun --standalone --nnodes=1 --nproc-per-node=<NUM_GPUS> finetune.py \
     --save_steps 1000 \
     --learning_rate <LR> \
     --pre_seq_len <PRE_SEQ_LEN> \
-    --quantization_bit 16
+    --quantization_bit 8
 
 # Train an adapter which support multi-rounds interaction
 torchrun --standalone --nnodes=1 --nproc-per-node=<NUM_GPUS> finetune.py \
@@ -84,7 +84,7 @@ torchrun --standalone --nnodes=1 --nproc-per-node=<NUM_GPUS> finetune.py \
     --save_steps 1000 \
     --learning_rate <LR> \
     --pre_seq_len <PRE_SEQ_LEN> \
-    --quantization_bit 16
+    --quantization_bit 8
 ```
 
 * Finetune all the params
